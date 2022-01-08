@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="description" content="a multiplayer game about memory and sleight of hand">
+        <meta name="keywords" content="mesmerise, rice, mesmeRICE, game, buttons, click">
+        <meta name="author" content="me">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+        <title>tempoRICE</title>
+
+        <style>
+        body {
+            background-color: #111;
+            color: #eee;
+            font: 1.25em Consolas, monospace;
+            text-align: center;
+        }
+
+        #center {
+            flex-direction: column;
+            justify-content: space-between;
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            max-height: 100vh;
+            transform: translate(-50%, -50%);
+            user-select: none;
+        }
+
+        #opp-boxes, #self-boxes {
+            display: flex;
+            justify-content: space-between;
+            width: 80vw;
+            height: 30vh;
+            font-size: 1.5em;
+            margin: 1% 0;
+        }
+
+        #main-desc, #side-desc {
+            margin-top: 0.25em;
+            margin-bottom: 0.5em;
+        }
+
+        button {
+            --color: #333;
+            background-color: inherit;
+            border: 3px solid var(--color);
+            border-radius: 14px;
+            font: inherit;
+            color: var(--color);
+        }
+
+        button:enabled {
+            background-image: radial-gradient(var(--color) 20%, transparent 20%);
+            background-size: 7px 7px;
+            background-position: 50% 50%;
+        }
+
+        button:enabled:hover {
+            cursor: pointer;
+        }
+
+        button:active {
+            background-image: radial-gradient(var(--color) 25%, transparent 25%);
+        }
+
+
+        .sml-box {
+            width: 26%;
+        }
+
+        #self-boxes > .sml-box {
+            --color: #048;
+        }
+
+        .med-box {
+            width: 32%;
+        }
+
+        #self-boxes > .med-box {
+            --color: #05c;
+        }
+
+        .big-box {
+            width: 38%;
+        }
+
+        #self-boxes > .big-box {
+            --color: #06f;
+        }
+        </style>
+    </head>
+    <body>
+        <article id="center">
+            <div id="opp-boxes">
+                <button class="big-box" disabled>3</a>
+                <button class="med-box" disabled>2</a>
+                <button class="sml-box" disabled>1</a>
+            </div>
+            <p id="main-desc">copy the other's presses while adding a new one each time</div>
+            <div id="self-boxes">
+                <button class="sml-box">1</a>
+                <button class="med-box">2</a>
+                <button class="big-box">3</a>
+            </div>
+            <p id="side-desc">click any button to play</div>
+        </article>
+        <script>
+            // HTMl elements
+            const self_buttons = [...document.getElementById("self-boxes").children];
+            const opp_buttons = [...document.getElementById("opp-boxes").children];
+            const side_desc = document.getElementById("side-desc");
+
+            // button trigger events
+            self_buttons[0].onclick = () => selfButton(0);
+            self_buttons[1].onclick = () => selfButton(1);
+            self_buttons[2].onclick = () => selfButton(2);
+
+            let inGame; // if player is in game
+
+            // websocket connection + stats
+            let ws;
+            let ping;
+
+            // game info + visuals
+            let gameInfo;
+            let buttonDrop;
+            let oppCurrPressed;
+
+            function start() {
+                // var assignment
+                gameInfo = {
+                    timeOut: 0,
+                    round: 0,
+                    buttonsLeft: 0,
+                    yourTurn: false
+                };
+                oppCurrPressed = -1;
+
+                // html reset
+                for(button of self_buttons) {
+                    button.style.removeProperty("--color");
+                }
+                for(button of opp_buttons) {
+                    button.style.removeProperty("--color");
+                }
+
+                toggleButtons(true);
+                side_desc.innerText = "click any button to play";
+            }
+
+            // retrieves ping
+            const pingGet = (function(){
+                let sendTime;
+                getter = {
+                    // send to server
+                    send: function(){
+                        if(ws === null || ws.readyState !== WebSocket.OPEN) return;
+                        ws.send("here");
+                        sendTime = performance.now();
+                    },
+
+                    // get from server
+                    rec: function(){
+                        ping = (performance.now() - sendTime) / 2; // server -> client (not round trip)
+                        console.log("ping: " + ping.toPrecision(3) + "ms");
+                    }
+                };
+                return getter;
+            })()
+
+            // enter queue for game
+            function initSearch() {
+                ws = new WebSocket('ws://localhost:8000/ws'); // check ip
+
+                // ping check
+                ws.onopen = pingGet.send;
+
+                ws.onmessage = function(msg) {
+                    sent = msg.data;
+                    switch(sent) {
+                        // ping returned
+                        case "seen":
+                            pingGet.rec();
+                            break;
+                        // start game (you start / they start)
+                        case "starty":
+                        case "startt":
+                            initGame(sent[5]);
+                            break;
+                        // opponent pressed a button
+                        case "button0":
+                        case "button1":
+                        case "button2":
+                            oppButton(parseInt(sent[6]));
+                            break;
+                        // end game
+                        case "win":
+                        case "lose":
+                            endGame(sent);
+                            break;
+                    }
+                }
+
+                // visual handlers
+                toggleButtons(false);
+                side_desc.innerText = "(waiting)";
+            }
+
+            function initGame(start) {
+                // start game
+                inGame = true;
+
+                gameInfo = {
+                    timeOut: performance.now() + 30000,
+                    round: 1,
+                    buttonsLeft: 1,
+                    yourTurn: false
+                };
+
+                for(button of opp_buttons) {
+                    button.style.setProperty("--color", "#999");
+                }
+
+
+                if(start === "y") {
+                    // you start
+                    side_desc.innerText = "(you start)";
+                    toggleButtons(true);
+                    gameInfo.yourTurn = true;
+                } else {
+                    // they start
+                    side_desc.innerText = "(they start)";
+                    toggleButtons(false);
+                }
+            }
+
+            // turn buttons on / off
+            function toggleButtons(enable) {
+                for (button of self_buttons) {
+                    button.disabled = !enable;
+                }
+            }
+
+            // when you press a button
+            function selfButton(i) {
+                if(inGame) {
+                    ws.send("button" + String(i));
+                    gameInfo.timeOut = performance.now() + 1000;
+                    bPressCheck();
+                } else {
+                    initSearch();
+                }
+            }
+
+            // visual handler
+            const oppSetPress = (function() {
+                let oppCurrPress = -1; // no current presses
+                let buttonDrop;
+
+                // moves button around
+                function changeButton(i) {
+                    if(oppCurrPressed != -1) {
+                        let oldButton = opp_buttons[2 - oppCurrPressed];
+                        oldButton.style.borderWidth = "3px";
+                        oldButton.style.fontWeight = "normal";
+                    }
+
+                    if(i != -1) {
+                        let button = opp_buttons[2 - i];
+                        button.style.borderWidth = "6px";
+                        button.style.fontWeight = "bold";
+                    }
+
+                    oppCurrPressed = i;
+                }
+
+                // add press, signals to remove press
+                return function(i) {
+                    changeButton(i);
+                    if (buttonDrop) clearTimeout(buttonDrop);
+                    buttonDrop = setTimeout(changeButton, 200, -1);
+                }
+            })()
+
+            // when opponent presses a button
+            function oppButton(button) {
+                oppSetPress(button)
+                gameInfo.timeOut = performance.now() + 1000;
+                bPressCheck();
+            }
+
+            // swap control if round is over
+            function bPressCheck() {
+                if (--gameInfo.buttonsLeft === 0) {
+                    gameInfo.buttonsLeft = ++gameInfo.round;
+                    gameInfo.yourTurn = !gameInfo.yourTurn;
+                    toggleButtons(gameInfo.yourTurn);
+                    gameInfo.timeOut = performance.now() + 1000;
+                    updateTimer();
+                }
+            }
+
+            // visual update, modifies timer
+            function updateTimer() {
+                if (!inGame) return
+                let fillSq = Math.ceil((gameInfo.timeOut - performance.now()) / 50);
+                let pingSq = Math.ceil(ping / 50); // delay caused by ping
+
+                // construct string
+                let timerStr = ""
+                for(let i = 0; i < 20; i++) {
+                    if (i >= fillSq) {
+                        timerStr += "\u25FB"; // empty square
+                    } else if (i >= pingSq) {
+                        timerStr += "\u25A3"; // container square
+                    } else {
+                        timerStr += "\u25A7"; // stripe square
+                    }
+                }
+                side_desc.innerText = timerStr;
+
+                // continue loop
+                if (fillSq >= 0) requestAnimationFrame(updateTimer);
+            }
+
+            function endGame(msg) {
+                inGame = false;
+                toggleButtons(false);
+
+                // visuals
+                for (button of msg === "win" ? self_buttons : opp_buttons) {
+                    button.style.setProperty("--color", "#3a3");
+                }
+
+                for (button of msg === "win" ? opp_buttons : self_buttons) {
+                    button.style.setProperty("--color", "#a33");
+                }
+
+                side_desc.innerText = "you " + msg;
+
+                // close connection, start over
+                if(ws) ws.close();
+                setTimeout(start, 3000);
+            }
+
+            start();
+        </script>
+    </body>
+</html>
